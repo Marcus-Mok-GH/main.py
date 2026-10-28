@@ -8,54 +8,70 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server);
 
+const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+
 // Serve static files from the 'public' directory
-app.use(express.static(path.join(__dirname, '..', 'public')));
+app.use(express.static(PUBLIC_DIR));
+
+// Basic route to serve index.html
+app.get('/', (req, res) => {
+    res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
+});
 
 io.on('connection', (socket) => {
     console.log('A user connected');
     const agent = new BrowserAgent(); // Create a new BrowserAgent for each client
+    let busy = false;
 
-    socket.on('action', async (data) => {
-        const { command, args } = data;
-        console.log(`Received action: ${command} with args: ${JSON.stringify(args)}`);
+    socket.on('action', async (data = {}) => {
+        const { command, args } = data || {};
+        const safeArgs = Array.isArray(args) ? args : [];
+        console.log(`Received action: ${command} with args: ${JSON.stringify(safeArgs)}`);
 
-        if (typeof agent[command] === 'function') {
-            try {
-                // Special handling for init_browser as it's the first call
-                if (command === 'init_browser') {
-                    await agent[command](...(args || [])); // Ensure args is an array
-                } else if (!agent.browser) {
-                    // Ensure browser is initialized for other commands
-                    console.error('Browser not initialized. Client should call init_browser first.');
-                    socket.emit('action_error', 'Browser not initialized. Call init_browser first.');
-                    return;
-                } else {
-                    await agent[command](...(args || [])); // Ensure args is an array
-                }
-                
-                const screenshot = await agent.get_screenshot();
-                const commandExecuted = `${command}(${(args || []).map(arg => JSON.stringify(arg)).join(', ')})`;
-
-                socket.emit('action_response', {
-                    reasoning: "[PLACEHOLDER REASONING]",
-                    command_executed: commandExecuted,
-                    screenshot: screenshot,
-                    grid: [] // Simplified grid
-                });
-            } catch (error) {
-                console.error(`Error executing command ${command}:`, error);
-                socket.emit('action_error', `Error executing command ${command}: ${error.message}`);
-            }
-        } else {
+        if (!agent.isToolCommand(command)) {
             console.error(`Invalid command: ${command}`);
             socket.emit('action_error', `Invalid command: ${command}`);
+            return;
+        }
+
+        if (busy) {
+            socket.emit('action_error', 'Another action is still running. Please wait.');
+            return;
+        }
+
+        if (command !== 'init_browser' && !agent.page) {
+            console.error('Browser not initialized. Client should call init_browser first.');
+            socket.emit('action_error', 'Browser not initialized. Call init_browser first.');
+            return;
+        }
+
+        busy = true;
+        try {
+            await agent.invoke(command, safeArgs);
+
+            const screenshot = await agent.get_screenshot();
+            const commandExecuted = `${command}(${safeArgs.map((arg) => JSON.stringify(arg)).join(', ')})`;
+
+            socket.emit('action_response', {
+                reasoning: '[PLACEHOLDER REASONING]',
+                command_executed: commandExecuted,
+                screenshot: screenshot,
+                grid: [] // Simplified grid
+            });
+        } catch (error) {
+            console.error(`Error executing command ${command}:`, error);
+            socket.emit('action_error', `Error executing command ${command}: ${error.message}`);
+        } finally {
+            busy = false;
         }
     });
 
     socket.on('disconnect', async () => {
         console.log('User disconnected');
-        if (agent.browser) {
+        try {
             await agent.close_browser(); // Clean up browser agent on disconnect
+        } catch (error) {
+            console.error('Error while closing browser on disconnect:', error);
         }
     });
 });
@@ -63,9 +79,4 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
-});
-
-// Basic route to serve index.html
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });

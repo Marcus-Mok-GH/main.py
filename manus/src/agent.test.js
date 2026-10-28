@@ -153,4 +153,38 @@ describe('BrowserAgent', () => {
             await expect(agent.close_browser()).resolves.not.toThrow();
         });
     });
+
+    describe('isToolCommand', () => {
+        it('should accept whitelisted tool commands', () => {
+            expect(agent.isToolCommand('init_browser')).toBe(true);
+            expect(agent.isToolCommand('go_to')).toBe(true);
+            expect(agent.isToolCommand('get_screenshot')).toBe(true);
+        });
+
+        it('should reject unknown commands and internal methods', () => {
+            expect(agent.isToolCommand('close_browser')).toBe(false);
+            expect(agent.isToolCommand('invoke')).toBe(false);
+            expect(agent.isToolCommand('constructor')).toBe(false);
+            expect(agent.isToolCommand(undefined)).toBe(false);
+        });
+    });
+
+    describe('invoke', () => {
+        it('should run a whitelisted command with the provided args', async () => {
+            await agent.invoke('init_browser', []);
+            expect(puppeteer.launch).toHaveBeenCalledTimes(1);
+
+            await agent.invoke('go_to', ['https://example.com']);
+            expect(mockPage.goto).toHaveBeenCalledWith('https://example.com', { waitUntil: 'networkidle2' });
+        });
+
+        it('should throw for a command that is not whitelisted', async () => {
+            await expect(agent.invoke('close_browser', [])).rejects.toThrow('Invalid command: close_browser');
+        });
+
+        it('should tolerate a missing args array', async () => {
+            await agent.invoke('init_browser');
+            expect(puppeteer.launch).toHaveBeenCalledTimes(1);
+        });
+    });
 });

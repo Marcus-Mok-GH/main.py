@@ -1,22 +1,17 @@
 const puppeteer = require('puppeteer');
 
-// Simple @tool decorator implementation
-function tool(target, propertyKey, descriptor) {
-  const originalMethod = descriptor.value;
-  descriptor.value = async function(...args) { // Made async to handle async methods
-    console.log(`Calling ${propertyKey} with args: ${JSON.stringify(args)}`);
-    // Ensure 'this' context is correct and originalMethod exists
-    if (originalMethod) {
-      return await originalMethod.apply(this, args);
-    } else {
-      console.error(`Original method for ${propertyKey} is undefined.`);
-      // Decide how to handle this - throw error or return undefined/null
-      // For now, logging error and returning undefined
-      return undefined; 
-    }
-  };
-  return descriptor;
-}
+// Commands that remote clients are allowed to invoke on a BrowserAgent.
+// Keeping this list explicit prevents a client from calling arbitrary
+// methods/properties (e.g. `constructor`, `invoke`) over the socket.
+const TOOL_METHODS = Object.freeze([
+    'init_browser',
+    'go_to',
+    'mouse_move',
+    'mouse_click',
+    'type',
+    'press_key',
+    'get_screenshot',
+]);
 
 class BrowserAgent {
     constructor() {
@@ -24,9 +19,41 @@ class BrowserAgent {
         this.page = null;
     }
 
-    @tool
+    static get toolMethods() {
+        return TOOL_METHODS;
+    }
+
+    /**
+     * Returns true when `command` is a tool exposed to remote clients.
+     * @param {string} command
+     * @returns {boolean}
+     */
+    isToolCommand(command) {
+        return typeof command === 'string' &&
+            TOOL_METHODS.includes(command) &&
+            typeof this[command] === 'function';
+    }
+
+    /**
+     * Runs a whitelisted tool with logging and argument normalization.
+     * @param {string} command
+     * @param {Array} args
+     */
+    async invoke(command, args = []) {
+        if (!this.isToolCommand(command)) {
+            throw new Error(`Invalid command: ${command}`);
+        }
+        const safeArgs = Array.isArray(args) ? args : [];
+        console.log(`Calling ${command} with args: ${JSON.stringify(safeArgs)}`);
+        return this[command](...safeArgs);
+    }
+
     async init_browser() {
-        this.browser = await puppeteer.launch({ 
+        // Avoid leaking a previous browser instance if the client re-initializes.
+        if (this.browser) {
+            await this.close_browser();
+        }
+        this.browser = await puppeteer.launch({
             headless: true, // Set to false to see the browser, true for CI/server
             args: ['--no-sandbox', '--disable-setuid-sandbox'] // Args for running in restricted environments
         });
@@ -34,28 +61,28 @@ class BrowserAgent {
         console.log('Browser initialized and new page created.');
     }
 
-    @tool
     async go_to(url) {
         if (!this.page) {
             console.error('Page not initialized. Call init_browser() first.');
             return;
         }
+        if (typeof url !== 'string' || url.trim() === '') {
+            throw new Error('go_to requires a non-empty URL string.');
+        }
         await this.page.goto(url, { waitUntil: 'networkidle2' });
         console.log(`Navigated to ${url}`);
     }
 
-    @tool
     async mouse_move(x, y) {
         if (!this.page) {
             console.error('Page not initialized.');
             return;
         }
         // For now, this is a placeholder as actual real-time mouse streaming is complex
-        // await this.page.mouse.move(x, y); 
+        // await this.page.mouse.move(x, y);
         console.log(`Mouse move to (${x}, ${y}) - placeholder`);
     }
 
-    @tool
     async mouse_click(x, y) {
         if (!this.page) {
             console.error('Page not initialized.');
@@ -65,7 +92,6 @@ class BrowserAgent {
         console.log(`Mouse clicked at (${x}, ${y})`);
     }
 
-    @tool
     async type(text) {
         if (!this.page) {
             console.error('Page not initialized.');
@@ -75,7 +101,6 @@ class BrowserAgent {
         console.log(`Typed text: ${text}`);
     }
 
-    @tool
     async press_key(key) {
         if (!this.page) {
             console.error('Page not initialized.');
@@ -85,7 +110,6 @@ class BrowserAgent {
         console.log(`Pressed key: ${key}`);
     }
 
-    @tool
     async get_screenshot() {
         if (!this.page) {
             console.error('Page not initialized.');
@@ -105,5 +129,7 @@ class BrowserAgent {
         }
     }
 }
+
+BrowserAgent.TOOL_METHODS = TOOL_METHODS;
 
 module.exports = BrowserAgent;
